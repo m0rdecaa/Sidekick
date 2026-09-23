@@ -20,9 +20,7 @@ DEFAULT_PROMPT = (
 
 
 def config_path() -> Path:
-    return Path(
-        os.environ.get("SIDEKICK_CONFIG", "~/.config/sidekick/config.json")
-    ).expanduser()
+    return Path(os.environ.get("SIDEKICK_CONFIG", "~/.config/sidekick/config.json")).expanduser()
 
 
 def load_config() -> dict[str, Any]:
@@ -35,7 +33,6 @@ def load_config() -> dict[str, Any]:
                 data.update(loaded)
         except (OSError, json.JSONDecodeError) as exc:
             print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
-
     data.setdefault("model", os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL))
     data.setdefault("api_key", os.environ.get("OPENROUTER_API_KEY", ""))
     data.setdefault("system", DEFAULT_PROMPT)
@@ -53,25 +50,9 @@ def save_config(data: dict[str, Any]) -> None:
         pass
 
 
-def http_json(
-    url: str,
-    *,
-    method: str = "GET",
-    payload: Any = None,
-    headers: dict[str, str] | None = None,
-    timeout: int = 60,
-) -> Any:
+def http_json(url: str, *, method: str = "GET", payload: Any = None, headers: dict[str, str] | None = None, timeout: int = 60) -> Any:
     body = None if payload is None else json.dumps(payload).encode()
-    request = urllib.request.Request(
-        url,
-        data=body,
-        method=method,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            **(headers or {}),
-        },
-    )
+    request = urllib.request.Request(url, data=body, method=method, headers={"Accept": "application/json", "Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
@@ -80,7 +61,6 @@ def http_json(
         raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach {url}: {exc.reason}") from exc
-
     try:
         return json.loads(raw.decode("utf-8"))
     except json.JSONDecodeError as exc:
@@ -90,21 +70,7 @@ def http_json(
 def calculate(expression: str) -> str:
     """Evaluate arithmetic without allowing names, calls, attributes, or strings."""
     tree = ast.parse(expression, mode="eval")
-    allowed = (
-        ast.Expression,
-        ast.Constant,
-        ast.UnaryOp,
-        ast.BinOp,
-        ast.Add,
-        ast.Sub,
-        ast.Mult,
-        ast.Div,
-        ast.Pow,
-        ast.Mod,
-        ast.USub,
-        ast.UAdd,
-        ast.FloorDiv,
-    )
+    allowed = (ast.Expression, ast.Constant, ast.UnaryOp, ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod, ast.USub, ast.UAdd, ast.FloorDiv)
     if any(not isinstance(node, allowed) for node in ast.walk(tree)):
         raise ValueError("only arithmetic expressions are allowed")
     value = eval(compile(tree, "<calculator>", "eval"), {"__builtins__": {}}, {})
@@ -117,36 +83,14 @@ class Sidekick:
     def __init__(self, config: dict[str, Any]):
         self.config = config
 
-    def complete(
-        self, prompt: str, *, history: list[dict[str, str]] | None = None
-    ) -> str:
+    def complete(self, prompt: str, *, history: list[dict[str, str]] | None = None) -> str:
         key = self.config.get("api_key") or os.environ.get("OPENROUTER_API_KEY")
         if not key:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
-
-        messages = [
-            {"role": "system", "content": self.config.get("system", DEFAULT_PROMPT)}
-        ]
+        messages = [{"role": "system", "content": self.config.get("system", DEFAULT_PROMPT)}]
         messages.extend(history if history is not None else self.config.get("history", []))
         messages.append({"role": "user", "content": prompt})
-
-        data = http_json(
-            "https://openrouter.ai/api/v1/chat/completions",
-            method="POST",
-            payload={
-                "model": self.config.get("model", DEFAULT_MODEL),
-                "messages": messages,
-                "temperature": 0.7,
-            },
-            headers={
-                "Authorization": f"Bearer {key}",
-                "HTTP-Referer": self.config.get(
-                    "app_url", "https://github.com/m0rdecaa/Sidekick"
-                ),
-                "X-Title": "Sidekick",
-            },
-            timeout=180,
-        )
+        data = http_json("https://openrouter.ai/api/v1/chat/completions", method="POST", payload={"model": self.config.get("model", DEFAULT_MODEL), "messages": messages, "temperature": 0.7}, headers={"Authorization": f"Bearer {key}", "HTTP-Referer": self.config.get("app_url", "https://github.com/m0rdecaa/Sidekick"), "X-Title": "Sidekick"}, timeout=180)
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -155,33 +99,22 @@ class Sidekick:
     def ask(self, prompt: str) -> str:
         answer = self.complete(prompt)
         history = self.config.setdefault("history", [])
-        history.extend(
-            [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": answer},
-            ]
-        )
+        history.extend([{"role": "user", "content": prompt}, {"role": "assistant", "content": answer}])
         self.config["history"] = history[-40:]
         save_config(self.config)
         return answer
 
     def jupyter(self) -> dict[str, Any]:
-        """Check that an authenticated Jupyter server has a usable kernel."""
+        """Check an authenticated Jupyter server and ensure a Python kernel exists."""
         url = os.environ.get("JUPYTER_URL", "").rstrip("/")
         token = os.environ.get("JUPYTER_TOKEN", "")
         if not url or not token:
             raise RuntimeError("JUPYTER_URL and JUPYTER_TOKEN are required")
-        kernels = http_json(
-            f"{url}/api/kernels", headers={"Authorization": f"token {token}"}
-        )
+        headers = {"Authorization": f"token {token}"}
+        kernels = http_json(f"{url}/api/kernels", headers=headers)
         if kernels:
             return {"ok": True, "kernel_id": kernels[0]["id"]}
-        kernel = http_json(
-            f"{url}/api/kernels",
-            method="POST",
-            payload={"name": "python3"},
-            headers={"Authorization": f"token {token}"},
-        )
+        kernel = http_json(f"{url}/api/kernels", method="POST", payload={"name": "python3"}, headers=headers)
         return {"ok": True, "kernel_id": kernel["id"]}
 
 
@@ -194,7 +127,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calculate")
     parser.add_argument("--jupyter", action="store_true")
     args = parser.parse_args(argv)
-
     config = load_config()
     agent = Sidekick(config)
 
@@ -220,7 +152,6 @@ def main(argv: list[str] | None = None) -> int:
             answer = agent.ask(args.prompt)
             print(json.dumps({"ok": True, "response": answer}, indent=2) if args.json else answer)
             return 0
-
         while True:
             try:
                 prompt = input("you > ").strip()
